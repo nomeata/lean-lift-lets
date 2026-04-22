@@ -1,0 +1,17 @@
+name = "pfocus"
+version = "0.1.0"
+defaultTargets = ["pfocus", "PfocusTests"]
+
+[[lean_lib]]
+name = "Pfocus"
+
+# Build the test suite as part of `lake build`. Each file under `tests/`
+# exercises a slice of the library and fails the build if anything breaks.
+[[lean_lib]]
+name = "PfocusTests"
+srcDir = "tests"
+globs = ["PfocusTests.+"]
+
+[[lean_exe]]
+name = "pfocus"
+root = "Main"
