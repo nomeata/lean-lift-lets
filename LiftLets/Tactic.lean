@@ -305,24 +305,20 @@ goals remain. `next => tacs` is the same but without the
 syntax (name := dotTac) patternIgnore("·" <|> ".") liftLetsSeq : liftLets
 syntax (name := nextTac) "next" " => " liftLetsSeq : liftLets
 
-private def focusImpl (code : Syntax) (mustClose : Bool) : LiftLetsM Unit :=
-  fun s realK => do
-    match (← getGoals) with
-    | [] => throwError "no goals"
-    | g :: rest =>
-      setGoals [g]
-      -- Pass the outer realK *into* the inner CPS chain as its tail.
-      -- If the inner block introduces a `have`/`let` (opening a
-      -- `withLetDecl` scope), the goal-restoration and the outer
-      -- continuation both run *inside* that scope. That's what lets
-      -- a `let` introduced inside a `·`-block remain visible to
-      -- subsequent siblings at the outer level.
-      (evalLiftLetsSeq code) s (fun _ s' => do
-        let remaining ← getGoals
-        if mustClose && !remaining.isEmpty then
-          throwError "`·`-block did not close the focused goal"
-        setGoals (remaining ++ rest)
-        realK () s')
+private def focusImpl (code : Syntax) (mustClose : Bool) : LiftLetsM Unit := do
+  -- `LiftLetsM`'s bind already threads the outer continuation through
+  -- the tail of this `do`-block, so if `evalLiftLetsSeq code` opens a
+  -- `withLetDecl` scope (via a `have`/`let`), the goal-restoration and
+  -- every outer sibling run *inside* that scope — no manual CPS needed.
+  match (← getGoals) with
+  | [] => throwError "no goals"
+  | g :: rest =>
+    setGoals [g]
+    evalLiftLetsSeq code
+    let remaining ← getGoals
+    if mustClose && !remaining.isEmpty then
+      throwError "`·`-block did not close the focused goal"
+    setGoals (remaining ++ rest)
 
 @[lift_lets_tactic LiftLets.dotTac] def evalDot : LiftLetsTactic := fun stx =>
   -- The `patternIgnore("·" <|> ".")` in the declaration means the

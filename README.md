@@ -1,5 +1,8 @@
 # lift-lets
 
+> **Status:** proof of concept. Exploratory and not hardened for general use —
+> expect rough edges, missing tactics, and possible redesigns.
+
 A small Lean 4 tactic family whose `lift_lets => …` block lets you
 thread `have` / `let` bindings introduced mid-proof through every
 remaining subgoal — with the bindings showing up as a single outer
@@ -144,7 +147,8 @@ provided they share the input mvar's local context.
 | file                    | role                                                      |
 | ----------------------- | --------------------------------------------------------- |
 | `LiftLets/Basic.lean`   | (reserved for shared definitions)                         |
-| `LiftLets/Attr.lean`    | `LiftLetsState`, `LiftLetsM`, and `@[lift_lets_tactic]`   |
+| `LiftLets/Monad.lean`   | `LiftLetsState`, `LiftLetsM` and its instances            |
+| `LiftLets/Attr.lean`    | `@[lift_lets_tactic]` attribute                           |
 | `LiftLets/Tactic.lean`  | syntax category, entry tactic, and all lift_lets tactics  |
 | `tests/LiftLetsTests/`  | unit tests + a demo file                                  |
 
