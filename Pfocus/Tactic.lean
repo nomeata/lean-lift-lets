@@ -594,13 +594,21 @@ def runActionOnFocus (action : MVarId → TacticM (List MVarId)) : TacticM Unit 
         action focusMVar.mvarId!
       finally
         setGoals savedGoals
-    -- Validate local-context stability.
+    -- Validate local-context stability. The implication we construct
+    -- lives in the pfocus goal's context, so every produced subgoal must
+    -- share that context exactly — no new fvars from `intro`, no cleared
+    -- hypotheses, etc. If a pfocus action needs a temporary hypothesis,
+    -- the user must close the goal within the action itself.
     let baseLCtx := (← mvarId.getDecl).lctx
     let checkSharedLCtx (g : MVarId) : TacticM Unit := do
       let gLCtx := (← g.getDecl).lctx
-      unless gLCtx.isSubPrefixOf baseLCtx || baseLCtx.isSubPrefixOf gLCtx do
-        throwError "pfocus action produced a goal with a different local context:{
-          indentD (MessageData.ofGoal g)}"
+      unless gLCtx.isSubPrefixOf baseLCtx && baseLCtx.isSubPrefixOf gLCtx do
+        throwError "\
+          a pfocus action produced a subgoal whose local context differs \
+          from the enclosing pfocus goal. This typically happens when a \
+          tactic like `intro` introduces a new hypothesis that cannot be \
+          propagated out. Close such goals inside the `tactic => ...` block.\
+          \n\nOffending goal:{indentD (MessageData.ofGoal g)}"
     for g in subgoals do checkSharedLCtx g
     -- Build an implication `(∧ of subgoal types) → focus`.
     -- Rather than assigning each subgoal's mvar to a projection of the new
