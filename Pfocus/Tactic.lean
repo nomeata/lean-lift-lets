@@ -275,7 +275,7 @@ Called automatically at the end of every `pfocus => ...` block. Users can
 call `exit` explicitly to leave pfocus mode mid-block, for example inside
 control combinators.
 -/
-partial def exitPFocus : TacticM Unit := do
+def exitPFocus : TacticM Unit := do
   -- Idempotent: do nothing if there is no remaining goal, or if the main
   -- goal is not a pfocus goal. The first case occurs when a predicate-focus
   -- `tactic =>` has already fully committed a witness and closed the `∃`.
@@ -283,41 +283,27 @@ partial def exitPFocus : TacticM Unit := do
   let mvarIdInit ← getMainGoal
   let targetInit ← instantiateMVars (← mvarIdInit.getType)
   unless targetInit.isAppOf ``Pfocus.pfocus do return
-  let _tup4 ← getPFocusTarget
-  let (mvarId, outer, _) := _tup4
-  if (← isIdOuter outer) then
-    mvarId.withContext do
-      let focus := (← matchPFocusGoal (← mvarId.getType)).2
-      -- `pfocus id True` closes trivially; handle that before producing
-      -- a leftover `True` goal that the user would have to dispatch.
-      if ← isDefEq focus trueExpr then
-        let intro ← mkAppOptM ``Pfocus.pfocus_intro
-          #[none, some (mkPropLam (.bvar 0)), some trueExpr, some (.const ``True.intro [])]
-        mvarId.assign intro
-        replaceMainGoal []
-      else
-        let newMVar ← mkFreshExprSyntheticOpaqueMVar focus (← mvarId.getTag)
-        let intro ← mkAppOptM ``Pfocus.pfocus_intro
-          #[none, some (mkPropLam (.bvar 0)), some focus, some newMVar]
-        mvarId.assign intro
-        replaceMainGoal [newMVar.mvarId!]
-  else
-    -- Try to pop an `And` frame. If that isn't possible (e.g. the outer is
-    -- a `∃` wrapper left over from an unassigned predicate-focus action),
-    -- unwrap the pfocus gadget to its underlying proposition instead so
-    -- the user can continue in regular tactic mode.
-    try
-      outStep
-      exitPFocus
-    catch _ =>
-      mvarId.withContext do
-        let (_, outer', focus') ← getPFocusTarget
-        let underlying := outer'.beta #[focus']
-        let newMVar ← mkFreshExprSyntheticOpaqueMVar underlying (← mvarId.getTag)
-        let intro ← mkAppOptM ``Pfocus.pfocus_intro
-          #[none, some outer', some focus', some newMVar]
-        mvarId.assign intro
-        replaceMainGoal [newMVar.mvarId!]
+  let (mvarId, outer, focus) ← getPFocusTarget
+  -- β-reduce `outer focus` to get the underlying proposition, and emit that
+  -- as the remaining goal. This is what the whole pfocus mode was
+  -- wrapping: `pfocus C P` is definitionally `C P`. The structure of the
+  -- outer (id / conjunction / existential / ...) doesn't matter here — any
+  -- `C P` reduces to the same Prop up to β.
+  mvarId.withContext do
+    let underlying := outer.beta #[focus]
+    -- `pfocus _ True` (after β) closes trivially; short-circuit so the user
+    -- doesn't have to dispatch a leftover `True` goal.
+    if ← isDefEq underlying trueExpr then
+      let intro ← mkAppOptM ``Pfocus.pfocus_intro
+        #[none, some outer, some focus, some (.const ``True.intro [])]
+      mvarId.assign intro
+      replaceMainGoal []
+    else
+      let newMVar ← mkFreshExprSyntheticOpaqueMVar underlying (← mvarId.getTag)
+      let intro ← mkAppOptM ``Pfocus.pfocus_intro
+        #[none, some outer, some focus, some newMVar]
+      mvarId.assign intro
+      replaceMainGoal [newMVar.mvarId!]
 
 /-! ## Navigation tactics
 
