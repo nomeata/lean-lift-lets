@@ -136,16 +136,24 @@ partial def evalPfocusCat (stx : Syntax) : PFocusM Unit :=
     if kind == nullKind then
       for arg in stx.getArgs do evalPfocusCat arg
       return
+    -- Every tactic invocation gets its own `withInfoContext` node so the
+    -- LSP `goalsAt?` logic can show the *before* state when the cursor
+    -- is at the first character of the tactic and the *after* state when
+    -- it's anywhere else in the tactic's range. This mirrors how core
+    -- Lean wraps both macros and regular tactics in
+    -- `withTacticInfoContext` (see `Lean.Elab.Tactic.Basic.evalTactic`).
+    let mctxBefore ← getMCtx
+    let goalsBefore ← getUnsolvedGoals
     let macros := macroAttribute.getEntries (← getEnv) kind
     if let m :: _ := macros then
-      let stx' ← adaptMacro m.value stx
-      evalPfocusCat stx'
+      withInfoContext (do
+          let stx' ← adaptMacro m.value stx
+          evalPfocusCat stx')
+        (mkPfocusTacticInfo stx mctxBefore goalsBefore)
       return
     let handlers := pfocusTacticAttr.getEntries (← getEnv) kind
     match handlers with
     | h :: _ =>
-      let mctxBefore ← getMCtx
-      let goalsBefore ← getUnsolvedGoals
       withInfoContext (h.value stx) (mkPfocusTacticInfo stx mctxBefore goalsBefore)
     | [] => throwError m!"pfocus tactic '{kind}' has not been implemented"
 
@@ -302,6 +310,8 @@ private def focusImpl (code : Syntax) (mustClose : Bool) : PFocusM Unit := do
 
 syntax (name := skip) "skip" : pfocus
 syntax (name := traceState) "trace_state" : pfocus
+syntax (name := rotateLeft) "rotate_left" (ppSpace num)? : pfocus
+syntax (name := rotateRight) "rotate_right" (ppSpace num)? : pfocus
 
 @[pfocus_tactic Pfocus.skip] def evalSkip : PFocusTactic := fun _ => pure ()
 
@@ -310,6 +320,16 @@ syntax (name := traceState) "trace_state" : pfocus
   match gs with
   | [] => logInfo "no goals"
   | _  => logInfo (goalsToMessageData gs)
+
+/-- Cycle the goal list left by `n` (default 1). -/
+@[pfocus_tactic Pfocus.rotateLeft] def evalRotateLeft : PFocusTactic := fun stx => do
+  let n : Nat := stx[1].getOptional?.map (·.toNat) |>.getD 1
+  setGoals <| (← getGoals).rotateLeft n
+
+/-- Cycle the goal list right by `n` (default 1). -/
+@[pfocus_tactic Pfocus.rotateRight] def evalRotateRight : PFocusTactic := fun stx => do
+  let n : Nat := stx[1].getOptional?.map (·.toNat) |>.getD 1
+  setGoals <| (← getGoals).rotateRight n
 
 /-! ## Entry-point tactic -/
 

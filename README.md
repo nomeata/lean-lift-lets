@@ -89,6 +89,8 @@ input mvar's local context.
 | ------------------------ | ------------------------------------------------------- |
 | `· tacs`                 | focus first goal; `tacs` must close it                  |
 | `next => tacs`           | focus first goal; no must-close check                   |
+| `rotate_left [n]`        | cycle the goal list left by `n` (default 1)             |
+| `rotate_right [n]`       | cycle the goal list right by `n` (default 1)            |
 
 ### Housekeeping
 
