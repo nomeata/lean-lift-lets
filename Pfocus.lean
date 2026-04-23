@@ -1,9 +1,7 @@
 /-
-Pfocus: Tactics that maintain a focus within a proof goal.
-
-This is the top-level module, re-exporting the public API.
+Pfocus: Tactics that maintain a shared local context across a tree of
+subgoals, without rewriting proof terms at every step.
 -/
 import Pfocus.Basic
-import Pfocus.Delab
 import Pfocus.Attr
 import Pfocus.Tactic

@@ -1,39 +1,44 @@
 import Pfocus
-open Pfocus
 
 /-!
-Test that `have`/`let` introduced inside pfocus mode *after* `exists`
-don't get zeta-reduced when the existential witness gets assigned.
+Main feature of pfocus mode: `have`/`let` introduced *mid-proof* remain
+visible and usable across the remaining subgoals, and the let-bindings
+show up in the final proof term — they are not zeta-reduced into every
+use site.
 
-This is the motivating example from the design discussion: the
-`exact h'` should unify `?x := m` (the let-bound identifier), not
-`?x := n + 1` (its value).
+The motivating example from the design discussion: a `let` introduced
+between `constructor` (which creates an existential witness + body
+subgoals) and the `exact` that closes the body must not zeta-reduce the
+witness assignment into the body's underlying value.
 -/
 
 example (g : Nat → Prop) (n : Nat) (h : (n + 1) + 0 = (n + 1)) (hg : g (n + 1)) :
     ∃ x : Nat, x + 0 = x ∧ g x := by
   pfocus =>
-    exists
+    tactic => refine ⟨?_, ?_, ?_⟩
+    -- three subgoals: `?x : Nat`, `?x + 0 = ?x`, and `g ?x`.
     let m := n + 1
     have h' : m + 0 = m := h
-    left
-    closing => exact h'
-  -- The remaining sibling is `g ?x`, with `?x` unified against `m`.
-  -- Because `m`'s definition was a `let`, `?x` is `m`, not `n + 1`
-  -- (no zeta-reduction on the assignment).
-  show g m
-  exact hg
+    · exact m
+    · exact h'
+    · exact hg
 
--- Variant from the original request: the let/have come *after* `left`
--- and an intermediate no-op `tactic =>` before the closing.
-example (g : Nat → Prop) (n : Nat) (h : (n + 1) + 0 = (n + 1)) (hg : g (n + 1)) :
-    ∃ x : Nat, (x + 0 = x ∧ g x) := by
+-- `let` at the pfocus level survives `apply` producing new subgoals.
+example (f : Nat → Nat → Prop) (g : ∀ a b, f a b) : f 0 0 ∧ f 1 1 := by
   pfocus =>
-    exists
-    left
-    let m := n + 1
-    have h' : m + 0 = m := h
-    tactic => skip
-    closing => exact h'
-  show g m
-  exact hg
+    let zero := (0 : Nat)
+    constructor
+    · exact g zero zero
+    · exact g 1 1
+
+-- `have` introduced in one branch is NOT visible in sibling branches,
+-- because it isn't a pfocus-level `have` (it's inside `tactic =>`).
+-- The pfocus-level `have` above `constructor` is; the inner
+-- `tactic => have` here is strictly local.
+example (A B : Prop) (a : A) (b : B) : A ∧ B := by
+  pfocus =>
+    constructor
+    · tactic =>
+        have _ := a
+        exact a
+    · exact b
