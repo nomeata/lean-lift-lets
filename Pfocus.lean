@@ -5,4 +5,5 @@ This is the top-level module, re-exporting the public API.
 -/
 import Pfocus.Basic
 import Pfocus.Delab
+import Pfocus.Attr
 import Pfocus.Tactic

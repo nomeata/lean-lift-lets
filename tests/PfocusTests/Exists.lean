@@ -2,49 +2,48 @@ import Pfocus
 open Pfocus
 
 /-!
-Tests for existential focusing. The `intro` navigation tactic steps into
-an `∃`, turning `pfocus C (∃ x, P x)` into `pfocus (fun p => C (∃ x, p x))
-(fun x => P x)`. Inside that predicate focus, `tactic => ...` creates a
-fresh `?x` mvar for the bound variable; if the tactic assigns it, a
-`let x := e` is added to the local context and the `∃` is discharged.
-If it doesn't, the `∃` stays in the goal with a possibly rewritten
-predicate.
+Tests for the `exists` pfocus tactic: it works like `constructor`, creating
+a fresh mvar `?x : α` as the witness and turning the focus from
+`∃ x : α, P x` into `P ?x`. Subsequent pfocus tactics can unify `?x` with
+a concrete value, or fail if they leave it unconstrained.
 -/
 
--- Assigned case: committing a witness via `exact rfl` (which unifies ?x
--- with the concrete RHS).
+-- The simplest case: `rfl` unifies `?x` with the concrete RHS.
 example : ∃ x : Nat, x = 5 := by
   pfocus =>
     exists
-    tactic =>
-      exact rfl
+    closing => rfl
 
--- Assigned case with a shared hypothesis across the pfocus block.
+-- Context-building happens before committing the witness.
 example (n : Nat) (h : n + 0 = n) : ∃ x : Nat, x + 0 = x := by
   pfocus =>
     have h' : n + 0 = n := h
     exists
-    tactic =>
-      exact h'
+    closing => exact h'
 
--- Unassigned case: the tactic rewrites the predicate without committing
--- a witness. The `∃` stays in the goal after pfocus exits; we close it
--- with a regular tactic.
-example (h : ∀ y : Nat, y + 0 = y) : ∃ x : Nat, x + 0 = x := by
-  pfocus =>
-    exists
-    tactic =>
-      -- `apply h` closes against a generic `?x`, leaves `?x` unassigned.
-      apply h
-  -- Pfocus leaves `⊢ ∃ x : Nat, True` (or equivalent) to be closed.
-  exact ⟨0, trivial⟩
-
--- When the tactic inside a predicate focus leaves no open subgoals but
--- also doesn't commit a witness, the new predicate collapses to
--- `fun _ => True`; the ∃ is still trivially closable outside the block.
+-- `apply` leaves `?x` unassigned, so we need a subsequent step that picks
+-- a concrete witness (here, `exact hg 0` unifies `?x := 0`).
 example (g : Nat → Prop) (hg : ∀ n, g n) : ∃ x : Nat, g x := by
   pfocus =>
     exists
-    tactic =>
-      apply hg
-  exact ⟨0, trivial⟩
+    closing => exact hg 0
+
+-- Key use case: `have`/`let` at the pfocus level is visible across the
+-- `exists`. The let binding is applied to the final proof term as a
+-- single outer `let` (not zeta-inlined into each use).
+example (n : Nat) : ∃ x : Nat, x + 0 = n ∧ True := by
+  pfocus =>
+    have h : n + 0 = n := by simp
+    exists
+    left
+    closing => exact h
+
+-- `let` works the same way and emits a pfocus goal that references the
+-- let-bound identifier rather than zeta-reducing it away.
+example : ∃ x : Nat, x = 3 + 2 := by
+  pfocus =>
+    let five := 3 + 2
+    exists
+    closing =>
+      show _ = five
+      rfl

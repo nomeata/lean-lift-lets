@@ -38,25 +38,17 @@ namespace Pfocus
 `pfocus C P` is definitionally equal to `C P`, but is marked `@[irreducible]`
 so tactics can recognize it and prevent Lean from unfolding it. It represents
 the focus state of the `pfocus` tactic family: `C` is the outer context and
-`P` is the currently-focused object.
-
-The focus `P` does not have to be a proposition. Making `α` a `Sort*` means
-we can represent existentials by taking `α := β → Prop` (the focus is a
-predicate) and the outer `C := fun p : β → Prop => ∃ x, p x`. The tactic
-framework uses this to let a `tactic => ...` action introduce a witness for
-`∃ x, P x` without the user having to `constructor` up-front.
+`P` is the currently-focused proposition.
 -/
 @[irreducible]
-def pfocus.{u} {α : Sort u} (C : α → Prop) (P : α) : Prop := C P
+def pfocus (C : Prop → Prop) (P : Prop) : Prop := C P
 
 /-- `C P` implies `pfocus C P`. This is the only way to introduce `pfocus`. -/
-theorem pfocus_intro.{u} {α : Sort u} {C : α → Prop} {P : α}
-    (h : C P) : pfocus C P := by
+theorem pfocus_intro {C : Prop → Prop} {P : Prop} (h : C P) : pfocus C P := by
   unfold pfocus; exact h
 
 /-- `pfocus C P` implies `C P`. This is the only way to eliminate `pfocus`. -/
-theorem pfocus_elim.{u} {α : Sort u} {C : α → Prop} {P : α}
-    (h : pfocus C P) : C P := by
+theorem pfocus_elim {C : Prop → Prop} {P : Prop} (h : pfocus C P) : C P := by
   unfold pfocus at h; exact h
 
 /--
@@ -111,7 +103,7 @@ For the common `Prop` case, callers build the morphism as
 (e.g. `C = fun p => ∃ x, p x`), callers build it as
 `fun e => e.elim (fun x hx => ⟨x, transport hx⟩)`.
 -/
-theorem pfocus_imp_raw.{u} {α : Sort u} {C : α → Prop} {X Y : α}
+theorem pfocus_imp_raw {C : Prop → Prop} {X Y : Prop}
     (h : C X → C Y) (c : pfocus C X) : pfocus C Y :=
   pfocus_intro (h (pfocus_elim c))
 

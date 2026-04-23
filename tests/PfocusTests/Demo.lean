@@ -104,54 +104,34 @@ example (A B : Prop) (f : A → B) (a : A) : B ∧ True := by
 /-!
 ## 5. Existentials
 
-`pfocus` also understands `∃`. The `exists` navigation tactic steps into an
-existential, turning `⊢ ⇣ ∃ x, P x` into a predicate focus that displays
-as `⊢ ⇣ ?x + 0 = ?x` (for instance): the bound variable shows up as a
-`?x` placeholder so the applied body is visible. Inside that predicate
-focus, `tactic => ...` behaves differently from the proposition case: it
-creates a *fresh metavariable* `?x : α` to stand in for the witness, then
-runs the user's tactic against the goal `P ?x`.
+`pfocus` also understands `∃`. The `exists` tactic works like
+`constructor`: it creates a fresh mvar `?x : α` for the witness and turns
+the focus from `∃ x, P x` into `P ?x` — the mvar appears visibly in the
+goal, and any pfocus tactic that unifies with it commits the witness.
 
-Two outcomes matter:
+A typical flow:
 
-* If the tactic *assigns* `?x` to some term `e` (typically via `exact`
-  that unifies `?x` with the concrete value), a `let x := e` is added to
-  the local context and the `∃` is discharged via `Exists.intro x`.
-* If the tactic *doesn't* assign `?x`, the `∃` stays in the goal; the
-  predicate may have been transformed along the way.
+1. Build up shared context with `have`/`let` at the pfocus level.
+2. `exists` to introduce the witness mvar.
+3. Close the (now Prop-shaped) focus with `closing => ...`, `rfl`, etc.
 
-This lets context-building steps (`have`, `let`) happen *outside* the
-witness choice, which you can't do if you blindly `constructor` up-front.
+Because pfocus defers the assignment of the outer goal until exit, the
+`have`/`let` bindings are valid across the witness commit — their values
+become `let`-bindings wrapped around the whole proof when pfocus exits.
 -/
 
--- Witness-commit: `rfl` unifies `?x` with `5`, and we're done.
+-- Witness-commit: `rfl` unifies `?x` with `5`.
 example : ∃ x : Nat, x = 5 := by
   pfocus =>
     exists
-    -- focus: `fun x => x = 5`, with a fresh `?x : Nat` in scope for the
-    -- `tactic =>` block.
-    tactic =>
-      exact rfl
+    closing => rfl
 
--- Shared context across a witness commit. `h'` is introduced in pfocus
--- mode, before entering the existential; once inside, the fresh `?x` can
--- be unified against whatever `h'` requires.
+-- Shared context across the witness commit: `h'` is introduced *before*
+-- `exists`, so it's in scope when we close the focused `?x + 0 = ?x`.
 example (n : Nat) (h : n + 0 = n) : ∃ x : Nat, x + 0 = x := by
   pfocus =>
-    have h' : n + 0 = n := h
+    have h' := h
     exists
-    tactic =>
-      exact h'
-
--- No-witness-commit: the tactic does useful predicate work without
--- picking a specific `x`. The `∃` stays in the goal for us to close
--- afterwards.
-example (g : Nat → Prop) (hg : ∀ n, g n) : ∃ x : Nat, g x := by
-  pfocus =>
-    exists
-    tactic =>
-      apply hg  -- closes against a generic `?x`; `?x` stays free.
-  -- After exit, the goal is `∃ x, True` (the predicate collapsed).
-  exact ⟨0, trivial⟩
+    closing => exact h'
 
 end Demo
