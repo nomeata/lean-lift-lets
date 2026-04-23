@@ -929,10 +929,20 @@ pieces have been discharged.
 syntax (name := pfocusTac) "pfocus" " => " pfocusSeq : tactic
 
 /--
-Dispatch a single pfocus syntax tree to a handler registered via the
-`@[pfocus_tactic]` attribute. Mirrors how `evalTactic` dispatches regular
-tactic syntax via `@[tactic]`.
+Build an `Info.ofTacticInfo` describing the pfocus-mode tactic invocation
+at `stx`, capturing the goal state before *and* after so the infoview
+shows hovers (and the tactic-state-on-hover feature works).
 -/
+private def mkPfocusTacticInfo (stx : Syntax) (mctxBefore : MetavarContext)
+    (goalsBefore : List MVarId) : PFocusM Info := do
+  return Info.ofTacticInfo {
+    elaborator := (← readThe Elab.Tactic.Context).elaborator
+    mctxBefore, goalsBefore
+    stx
+    mctxAfter := (← getMCtx)
+    goalsAfter := (← getUnsolvedGoals)
+  }
+
 partial def evalPfocusCat (stx : Syntax) : PFocusM Unit :=
   withRef stx do
     let kind := stx.getKind
@@ -947,7 +957,13 @@ partial def evalPfocusCat (stx : Syntax) : PFocusM Unit :=
       return
     let handlers := pfocusTacticAttr.getEntries (← getEnv) kind
     match handlers with
-    | h :: _ => h.value stx
+    | h :: _ =>
+      -- Capture the "before" state up-front so the info-tree node
+      -- covers just this handler's execution.
+      let mctxBefore ← getMCtx
+      let goalsBefore ← getUnsolvedGoals
+      withInfoContext (h.value stx)
+        (mkPfocusTacticInfo stx mctxBefore goalsBefore)
     | [] => throwError m!"pfocus tactic '{kind}' has not been implemented"
 
 /--

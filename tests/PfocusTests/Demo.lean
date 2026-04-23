@@ -128,10 +128,18 @@ example : ∃ x : Nat, x = 5 := by
 
 -- Shared context across the witness commit: `h'` is introduced *before*
 -- `exists`, so it's in scope when we close the focused `?x + 0 = ?x`.
-example (n : Nat) (h : n + 0 = n) : ∃ x : Nat, x + 0 = x := by
+example (g : Nat → Prop) (n : Nat) (h : (n + 1) + 0 = (n + 1)) (hg : g (n+1)) : ∃ x : Nat, (x + 0 = x ∧ g x):= by
   pfocus =>
-    have h' := h
     exists
+    left
+    let m := n + 1
+    have h' : m + 0 = m := h
+    tactic =>
+      skip
     closing => exact h'
+  -- got `g (n + 1)`, expected `g m`
+  exact hg
+
+
 
 end Demo
