@@ -109,4 +109,31 @@ example (P Q R : Prop) (p : P) (q : Q) (r : R) : P ∧ Q ∧ R := by
     · exact q
     · exact r
 
+/-!
+## 7. A larger example
+
+A proof that threads two `let`s through a tree of subgoals. Each `let`
+is introduced *after* `constructor` has split the existential into a
+witness subgoal plus the body; the witness is then supplied by `exact
+as` (resp. `exact bs`), which unifies directly against the pfocus-level
+let-fvar — no zeta-reduction — so the remaining subgoals still see the
+same `as` / `bs` identifiers.
+-/
+
+example (xs : List Nat) (h : xs.length = 10) :
+    ∃ as bs, as.length = 5 ∧ xs = as ++ bs ∧ as.length = bs.length := by
+  pfocus =>
+    constructor
+    constructor
+    constructor
+    · let as := xs.take 5
+      have has : List.length as = 5 := by grind
+      exact has
+    · constructor
+      · tactic => symm
+        let bs := xs.drop 5
+        tactic => change as ++ bs = xs
+        apply List.take_append_drop
+      · tactic => grind
+
 end Demo
