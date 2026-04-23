@@ -58,7 +58,7 @@ def trackLiftLetsMVar (mvarId : MVarId) : LiftLetsM Unit :=
 
 /-- Are two local contexts equal in the lift_lets-relevant sense — same
 fvars in the same order? -/
-private def lctxEqLiftLets (a b : LocalContext) : Bool :=
+def lctxEqLiftLets (a b : LocalContext) : Bool :=
   a.isSubPrefixOf b && b.isSubPrefixOf a
 
 /-- Extend the declared local context of every tracked mvar with a new
@@ -71,9 +71,8 @@ field), and `rootMVar` gets assigned as soon as the first `tactic => …`
 runs. Updating an assigned mvar's lctx is safe because we only ever
 append decls — its existing assignment still type-checks in the larger
 context. -/
-private def extendTrackedLCtxs (fvarId : FVarId) (userName : Name)
-    (type value : Expr) : LiftLetsM Unit := do
-  let tracked := (← get).trackedMVars
+def extendTrackedLCtxs (tracked : Array MVarId) (fvarId : FVarId)
+    (userName : Name) (type value : Expr) : TacticM Unit := do
   for m in tracked do
     let d ← m.getDecl
     let newLCtx := d.lctx.mkLetDecl fvarId userName type value
@@ -117,26 +116,32 @@ extended context.
 -/
 def exitLiftLets : LiftLetsM Unit := do
   let state ← get
-  let rootDecl ← state.rootMVar.getDecl
-  let currentLCtx := rootDecl.lctx
-  -- Decls added since entry, in their local-context insertion order.
+  -- `rootMVar`'s declared lctx always reflects every `have`/`let` we
+  -- have extended — but the *ambient* MetaM lctx, inside any open
+  -- `withLetDecl` scopes from the CPS chain, does as well. We use the
+  -- ambient one here so that `mkLetFVars` finds the decls without
+  -- needing a `withLCtx` dance.
+  let currentLCtx ← liftM (getLCtx : TacticM LocalContext)
   let extraFVars : Array Expr := Id.run do
     let mut acc : Array Expr := #[]
     for decl in currentLCtx do
       unless state.entryLCtx.contains decl.fvarId do
         acc := acc.push (.fvar decl.fvarId)
     return acc
-  withLCtx currentLCtx #[] do
-    let rootValue ← instantiateMVars (.mvar state.rootMVar)
-    let wrapped ← mkLetFVars (usedLetOnly := false) extraFVars rootValue
-    state.entryGoal.assign wrapped
+  -- No withLCtx: we are already inside every `withLetDecl` scope that
+  -- accumulated during the block, so `getLCtx` above already sees the
+  -- new decls, and `mkLetFVars` looks them up in the ambient context.
+  let rootValue ← instantiateMVars (.mvar state.rootMVar)
+  let wrapped ← mkLetFVars (usedLetOnly := false) extraFVars rootValue
+  state.entryGoal.assign wrapped
 
 /-! ## Dispatcher -/
 
-/-- Produce a `TacticInfo` record for an invocation of a lift_lets tactic,
-so the infoview shows the goal state on hover. -/
-private def mkLiftLetsTacticInfo (stx : Syntax) (mctxBefore : MetavarContext)
-    (goalsBefore : List MVarId) : LiftLetsM Info := do
+/-- Build a `TacticInfo` for a lift_lets-tactic invocation, using the
+current `TacticM` state as the "after" state. -/
+private def mkLiftLetsTacticInfoNow
+    (stx : Syntax) (mctxBefore : MetavarContext)
+    (goalsBefore : List MVarId) : TacticM Info := do
   return Info.ofTacticInfo {
     elaborator := (← readThe Elab.Tactic.Context).elaborator
     mctxBefore, goalsBefore
@@ -145,43 +150,47 @@ private def mkLiftLetsTacticInfo (stx : Syntax) (mctxBefore : MetavarContext)
     goalsAfter := (← getUnsolvedGoals)
   }
 
-/-- Dispatch a single `liftLets` syntax tree via the `@[lift_lets_tactic]`
-attribute, expanding any matching `macro` first. -/
-partial def evalLiftLetsCat (stx : Syntax) : LiftLetsM Unit :=
-  withRef stx do
-    let kind := stx.getKind
-    if kind == nullKind then
-      for arg in stx.getArgs do evalLiftLetsCat arg
-      return
-    -- Every tactic invocation gets its own `withInfoContext` node so the
-    -- LSP `goalsAt?` logic can show the *before* state when the cursor
-    -- is at the first character of the tactic and the *after* state when
-    -- it's anywhere else in the tactic's range. This mirrors how core
-    -- Lean wraps both macros and regular tactics in
-    -- `withTacticInfoContext` (see `Lean.Elab.Tactic.Basic.evalTactic`).
-    let mctxBefore ← getMCtx
-    let goalsBefore ← getUnsolvedGoals
-    let macros := macroAttribute.getEntries (← getEnv) kind
-    if let m :: _ := macros then
-      withInfoContext (do
-          let stx' ← adaptMacro m.value stx
-          evalLiftLetsCat stx')
-        (mkLiftLetsTacticInfo stx mctxBefore goalsBefore)
-      return
+/-- Dispatch a single `liftLets` syntax tree.
+
+Written in plain `do`-notation for `LiftLetsM`: `withRef`, `getMCtx`,
+`pushInfoLeaf`, `throwError`, etc. are lifted automatically via our
+`MonadLift`/`MonadRef`/`MonadExceptOf`/… instances. The `pushInfoLeaf`
+*after* the handler runs is the magic that gives us the same
+before-state/after-state hover behaviour as regular Lean tactics: for a
+scope-introducing handler like `have`/`let`, the "after" snapshot is
+taken inside the `withLetDecl` scope, because that's where the handler's
+continuation runs. -/
+partial def evalLiftLetsCat (stx : Syntax) : LiftLetsM Unit := withRef stx do
+  let kind := stx.getKind
+  if kind == nullKind then
+    for arg in stx.getArgs do evalLiftLetsCat arg
+    return
+  let mctxBefore ← getMCtx
+  let goalsBefore ← getUnsolvedGoals
+  let macros := macroAttribute.getEntries (← getEnv) kind
+  if let m :: _ := macros then
+    let stx' ← liftM (adaptMacro m.value stx : TacticM _)
+    evalLiftLetsCat stx'
+  else
     let handlers := liftLetsTacticAttr.getEntries (← getEnv) kind
     match handlers with
-    | h :: _ =>
-      withInfoContext (h.value stx) (mkLiftLetsTacticInfo stx mctxBefore goalsBefore)
+    | h :: _ => h.value stx
     | [] => throwError m!"lift_lets tactic '{kind}' has not been implemented"
+  -- Push the info leaf *after* the handler. Runs inside any scope the
+  -- handler opened (e.g. `withLetDecl`), so `mctxAfter`/`goalsAfter`
+  -- reflect the scope's effect on tracked mvars.
+  let info ← mkLiftLetsTacticInfoNow stx mctxBefore goalsBefore
+  pushInfoLeaf info
 
 /-- Walk a `sepBy1IndentSemicolon`-style sequence. -/
-def evalLiftLetsSepByIndent (stx : Syntax) : LiftLetsM Unit := do
+partial def evalLiftLetsSepByIndent (stx : Syntax) : LiftLetsM Unit := do
   for arg in stx.getArgs, i in *...stx.getArgs.size do
-    if i % 2 == 0 then
-      evalLiftLetsCat arg
-    else
+    if i % 2 == 1 then
       saveTacticInfoForToken arg
+    else
+      evalLiftLetsCat arg
 
+/-- Evaluate a `liftLetsSeq`, bracketed or indented. -/
 def evalLiftLetsSeq (stx : Syntax) : LiftLetsM Unit := do
   if stx.getKind == ``liftLetsSeqBracketed then
     evalLiftLetsSepByIndent stx[1]
@@ -200,35 +209,29 @@ new subgoals. -/
 syntax (name := tacticTac) "tactic" " => " tacticSeq : liftLets
 
 @[lift_lets_tactic LiftLets.tacticTac] def evalTacticTac : LiftLetsTactic := fun stx => do
-  match stx with
-  | `(liftLets| tactic => $code) => do
-    let mvarId ← getMainGoal
-    let baseLCtx := (← mvarId.getDecl).lctx
-    -- Save and restore the global goal list around the tactic call.
+  let `(liftLets| tactic => $code) := stx | throwUnsupportedSyntax
+  let mvarId ← getMainGoal
+  let baseLCtx := (← mvarId.getDecl).lctx
+  -- Save and restore the global goal list around the tactic call.
+  let subgoals ← liftM do
     let savedGoals ← getGoals
-    let subgoals ←
-      try
-        setGoals [mvarId]
-        evalTactic code
-        pure (← getGoals)
-      finally
-        setGoals savedGoals
-    -- Every subgoal must share the base context exactly. If a tactic
-    -- wants to introduce a new hypothesis, users have to do that via
-    -- the lift_lets-level `have`/`let` instead (which extends *every*
-    -- tracked mvar's context, not just the subgoal's).
-    for g in subgoals do
-      let gLCtx := (← g.getDecl).lctx
-      unless lctxEqLiftLets baseLCtx gLCtx do
-        throwError "\
-          `tactic =>` produced a subgoal whose local context differs \
-          from the main goal. Use a lift_lets-level `have`/`let` to \
-          introduce hypotheses so they reach every tracked goal.\
-          \n\nOffending goal:{indentD (MessageData.ofGoal g)}"
-      trackLiftLetsMVar g
-    -- Replace main goal list with the subgoals.
-    replaceMainGoal subgoals
-  | _ => throwUnsupportedSyntax
+    try
+      setGoals [mvarId]
+      evalTactic code
+      pure (← getGoals)
+    finally
+      setGoals savedGoals
+  -- Every subgoal must share the base context exactly.
+  for g in subgoals do
+    let gLCtx := (← g.getDecl).lctx
+    unless lctxEqLiftLets baseLCtx gLCtx do
+      throwError "\
+        `tactic =>` produced a subgoal whose local context differs \
+        from the main goal. Use a lift_lets-level `have`/`let` to \
+        introduce hypotheses so they reach every tracked goal.\
+        \n\nOffending goal:{indentD (MessageData.ofGoal g)}"
+    trackLiftLetsMVar g
+  replaceMainGoal subgoals
 
 /-! ## Convenience wrappers around `tactic => …` -/
 
@@ -258,19 +261,25 @@ syntax (name := letTac) "let "  ident (" : " term)? " := " term : liftLets
 
 def addLiftLetsDecl (name : Name) (typeStx? : Option Syntax) (valueStx : Syntax) :
     LiftLetsM Unit := do
-  let mvarId ← getMainGoal
-  mvarId.withContext do
-    let expectedType ← match typeStx? with
-      | some t => Lean.Elab.Term.elabType t
-      | none   => mkFreshTypeMVar
-    let value ← Lean.Elab.Term.elabTermEnsuringType valueStx expectedType
-    Lean.Elab.Term.synthesizeSyntheticMVarsNoPostponing
-    let type ← instantiateMVars expectedType
-    let value ← instantiateMVars value
-    let fvarId ← mkFreshFVarId
-    extendTrackedLCtxs fvarId name type value
+  -- Elaborate the type and value in the current main goal's context.
+  let (type, value) ← liftM do
+    let mvarId ← getMainGoal
+    mvarId.withContext do
+      let expectedType ← match typeStx? with
+        | some t => Lean.Elab.Term.elabType t
+        | none   => mkFreshTypeMVar
+      let value ← Lean.Elab.Term.elabTermEnsuringType valueStx expectedType
+      Lean.Elab.Term.synthesizeSyntheticMVarsNoPostponing
+      pure ((← instantiateMVars expectedType), (← instantiateMVars value))
+  -- Open a `withLetDecl` scope around the rest of the block: the ambient
+  -- MetaM local context gains the new fvar, and every subsequent tactic
+  -- (plus `exitLiftLets`) runs inside the scope. Then extend every
+  -- tracked mvar's declared lctx so future assignments referencing the
+  -- new fvar don't zeta-reduce.
+  let fvar ← LiftLetsM.withLetDecl name type value
+  extendTrackedLCtxs (← get).trackedMVars fvar.fvarId! name type value
 
-@[lift_lets_tactic LiftLets.haveTac] def evalHaveTac : LiftLetsTactic := fun stx => do
+@[lift_lets_tactic LiftLets.haveTac] def evalHaveTac : LiftLetsTactic := fun stx =>
   match stx with
   | `(liftLets| have $x:ident : $t:term := $v:term) =>
     addLiftLetsDecl x.getId (some t.raw) v.raw
@@ -278,7 +287,7 @@ def addLiftLetsDecl (name : Name) (typeStx? : Option Syntax) (valueStx : Syntax)
     addLiftLetsDecl x.getId none v.raw
   | _ => throwUnsupportedSyntax
 
-@[lift_lets_tactic LiftLets.letTac] def evalLetTac : LiftLetsTactic := fun stx => do
+@[lift_lets_tactic LiftLets.letTac] def evalLetTac : LiftLetsTactic := fun stx =>
   match stx with
   | `(liftLets| let $x:ident : $t:term := $v:term) =>
     addLiftLetsDecl x.getId (some t.raw) v.raw
@@ -296,27 +305,32 @@ goals remain. `next => tacs` is the same but without the
 syntax (name := dotTac) patternIgnore("·" <|> ".") liftLetsSeq : liftLets
 syntax (name := nextTac) "next" " => " liftLetsSeq : liftLets
 
-private def focusImpl (code : Syntax) (mustClose : Bool) : LiftLetsM Unit := do
-  match (← getGoals) with
-  | [] => throwError "no goals"
-  | g :: rest =>
-    setGoals [g]
-    try
-      evalLiftLetsSeq code
-    finally
-      let remaining ← getGoals
-      if mustClose && !remaining.isEmpty then
-        throwError "`·`-block did not close the focused goal"
-      setGoals (remaining ++ rest)
+private def focusImpl (code : Syntax) (mustClose : Bool) : LiftLetsM Unit :=
+  fun s realK => do
+    match (← getGoals) with
+    | [] => throwError "no goals"
+    | g :: rest =>
+      setGoals [g]
+      -- Pass the outer realK *into* the inner CPS chain as its tail.
+      -- If the inner block introduces a `have`/`let` (opening a
+      -- `withLetDecl` scope), the goal-restoration and the outer
+      -- continuation both run *inside* that scope. That's what lets
+      -- a `let` introduced inside a `·`-block remain visible to
+      -- subsequent siblings at the outer level.
+      (evalLiftLetsSeq code) s (fun _ s' => do
+        let remaining ← getGoals
+        if mustClose && !remaining.isEmpty then
+          throwError "`·`-block did not close the focused goal"
+        setGoals (remaining ++ rest)
+        realK () s')
 
-@[lift_lets_tactic LiftLets.dotTac] def evalDot : LiftLetsTactic := fun stx => do
+@[lift_lets_tactic LiftLets.dotTac] def evalDot : LiftLetsTactic := fun stx =>
   -- The `patternIgnore("·" <|> ".")` in the declaration means the
   -- leading token is recognised as either symbol; we don't need to
   -- distinguish them here.
-  let seq := stx[1]
-  focusImpl seq true
+  focusImpl stx[1] true
 
-@[lift_lets_tactic LiftLets.nextTac] def evalNext : LiftLetsTactic := fun stx => do
+@[lift_lets_tactic LiftLets.nextTac] def evalNext : LiftLetsTactic := fun stx =>
   match stx with
   | `(liftLets| next => $seq:liftLetsSeq) => focusImpl seq false
   | _ => throwUnsupportedSyntax
@@ -330,20 +344,20 @@ syntax (name := rotateRight) "rotate_right" (ppSpace num)? : liftLets
 
 @[lift_lets_tactic LiftLets.skip] def evalSkip : LiftLetsTactic := fun _ => pure ()
 
-@[lift_lets_tactic LiftLets.traceState] def evalTraceState : LiftLetsTactic := fun _ => do
+@[lift_lets_tactic LiftLets.traceState] def evalTraceState : LiftLetsTactic := fun _ => liftM do
   let gs ← getGoals
   match gs with
   | [] => logInfo "no goals"
   | _  => logInfo (goalsToMessageData gs)
 
 /-- Cycle the goal list left by `n` (default 1). -/
-@[lift_lets_tactic LiftLets.rotateLeft] def evalRotateLeft : LiftLetsTactic := fun stx => do
-  let n : Nat := stx[1].getOptional?.map (·.toNat) |>.getD 1
+@[lift_lets_tactic LiftLets.rotateLeft] def evalRotateLeft : LiftLetsTactic := fun stx => liftM do
+  let n : Nat := stx[1].getOptional?.map (·.toNat : Syntax → Nat) |>.getD 1
   setGoals <| (← getGoals).rotateLeft n
 
 /-- Cycle the goal list right by `n` (default 1). -/
-@[lift_lets_tactic LiftLets.rotateRight] def evalRotateRight : LiftLetsTactic := fun stx => do
-  let n : Nat := stx[1].getOptional?.map (·.toNat) |>.getD 1
+@[lift_lets_tactic LiftLets.rotateRight] def evalRotateRight : LiftLetsTactic := fun stx => liftM do
+  let n : Nat := stx[1].getOptional?.map (·.toNat : Syntax → Nat) |>.getD 1
   setGoals <| (← getGoals).rotateRight n
 
 /-! ## Entry-point tactic -/
@@ -366,6 +380,7 @@ syntax (name := liftLetsTac) "lift_lets" " => " liftLetsSeq : tactic
         evalLiftLetsSeq code
         exitLiftLets
       runBody.run' initState
+      return
   | _ => throwUnsupportedSyntax
 
 end LiftLets
