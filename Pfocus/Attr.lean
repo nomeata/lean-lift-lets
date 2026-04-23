@@ -32,12 +32,19 @@ structure PFocusLetDecl where
   yields a proof of `entryGoal`'s target.
 * `extraDecls` — let-decls added in this block, in order, to be wrapped
   around the proof at exit.
+* `trackedMVars` — every metavariable allocated inside the block (the
+  root, pfocus leaves, witness mvars from `exists`, subgoal mvars…). When
+  `have`/`let` extends the context we extend *each* tracked mvar's
+  declared local context too, so later tactics that assign any of them
+  can do so in terms of the new let-bound variable without triggering
+  zeta-reduction.
 -/
 structure PFocusState where
   entryGoal : MVarId
   entryLCtx : LocalContext
   rootMVar : MVarId
   extraDecls : Array PFocusLetDecl := #[]
+  trackedMVars : Array MVarId := #[]
 
 /-- The monad in which pfocus-mode tactics run. -/
 abbrev PFocusM := StateRefT PFocusState TacticM

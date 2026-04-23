@@ -162,6 +162,26 @@ def getPFocusTarget : TacticM (MVarId × Expr × Expr) := do
     let (outer, focus) := _tup1
     return (mvarId, outer, focus)
 
+/-- Track a freshly-allocated metavariable so that future `have`/`let`
+extensions propagate to its local context. -/
+def trackPFocusMVar (mvarId : MVarId) : PFocusM Unit :=
+  modify fun s => { s with trackedMVars := s.trackedMVars.push mvarId }
+
+/-- Allocate a fresh synthetic-opaque mvar of the given type inside
+pfocus mode, and track it for later let/have propagation. -/
+def mkTrackedSyntheticOpaqueMVar (type : Expr) (userName : Name := .anonymous) :
+    PFocusM Expr := do
+  let m ← mkFreshExprSyntheticOpaqueMVar type userName
+  trackPFocusMVar m.mvarId!
+  return m
+
+/-- Allocate a fresh (non-synthetic) mvar inside pfocus mode, tracking
+it. Used for witness mvars introduced by `exists`. -/
+def mkTrackedMVar (type : Expr) (userName : Name := .anonymous) : PFocusM Expr := do
+  let m ← mkFreshExprMVar type (userName := userName)
+  trackPFocusMVar m.mvarId!
+  return m
+
 /--
 Replace the main goal with a new pfocus goal `pfocus newOuter newFocus`,
 assigning the old goal via `pfocus_intro (pfocus_elim newMVar)`. This relies
@@ -169,12 +189,12 @@ on `(newOuter) (newFocus)` being β-definitionally equal to `(oldOuter)
 (oldFocus)`, which the navigation tactics `left`, `right`, and `out` always
 arrange.
 -/
-def replaceWithFocusGoal (newOuter newFocus : Expr) : TacticM Unit := do
+def replaceWithFocusGoal (newOuter newFocus : Expr) : PFocusM Unit := do
   let _tup2 ← getPFocusTarget
   let (mvarId, oldOuter, oldFocus) := _tup2
   mvarId.withContext do
     let newType ← mkAppM ``Pfocus.pfocus #[newOuter, newFocus]
-    let newMVar ← mkFreshExprSyntheticOpaqueMVar newType (← mvarId.getTag)
+    let newMVar ← mkTrackedSyntheticOpaqueMVar newType (← mvarId.getTag)
     -- `pfocus_elim newMVar : newOuter newFocus`, which is β-defeq to
     -- `oldOuter oldFocus`. The explicit args to `pfocus_intro` below force
     -- the result type to be `pfocus oldOuter oldFocus` (= old target).
@@ -203,7 +223,11 @@ def enterPFocus : TacticM PFocusState := do
     let rootType ← mkAppM ``Pfocus.pfocus #[idOuter, target]
     let rootMVar ← mkFreshExprSyntheticOpaqueMVar rootType (← entryGoal.getTag)
     replaceMainGoal [rootMVar.mvarId!]
-    return { entryGoal, entryLCtx, rootMVar := rootMVar.mvarId!, extraDecls := #[] }
+    return {
+      entryGoal, entryLCtx, rootMVar := rootMVar.mvarId!
+      extraDecls := #[]
+      trackedMVars := #[rootMVar.mvarId!]
+    }
 
 /--
 Check if an outer context `outer : Prop → Prop` is the identity `fun p : Prop => p`.
@@ -254,7 +278,7 @@ private def matchAndFrameImpl (outer : Expr) : MetaM (Expr × Expr × Bool) := d
   let (newBody, other, isLeft) ← stripInnermost body
   return (mkPropLam newBody, other, isLeft)
 
-def outStep : TacticM Unit := do
+def outStep : PFocusM Unit := do
   let _tup3 ← getPFocusTarget
   let (mvarId, outer, focus) := _tup3
   mvarId.withContext do
@@ -382,7 +406,7 @@ def applyPFocusImp (h : Expr) (X : Expr) : PFocusM Unit := do
   let (mvarId, outer, focus) := _tup15
   mvarId.withContext do
     let newType ← mkAppM ``Pfocus.pfocus #[outer, X]
-    let newMVar ← mkFreshExprSyntheticOpaqueMVar newType (← mvarId.getTag)
+    let newMVar ← mkTrackedSyntheticOpaqueMVar newType (← mvarId.getTag)
     let mono ← buildMonoSpec outer X focus
     let hMorphism := mkApp mono h
     let proof ← mkAppOptM ``Pfocus.pfocus_imp_raw
@@ -414,8 +438,11 @@ syntax (name := existsTac) "exists" : pfocus
       throwError "`exists`: focus is not an existential:{indentExpr focus}"
     let α := focusW.appFn!.appArg!
     let P := focusW.appArg!
-    -- Fresh witness mvar, in the same context as the pfocus goal.
-    let xMVar ← mkFreshExprMVar α (userName := `x)
+    -- Fresh witness mvar, in the same context as the pfocus goal; it
+    -- is *tracked* so that `have`/`let` in subsequent pfocus steps
+    -- extend its declared local context too (and a later `exact h`
+    -- that unifies `?x := let-bound-name` doesn't get zeta-reduced).
+    let xMVar ← mkTrackedMVar α `x
     -- New focus: `P ?x` (β-applied).
     let newFocus := P.beta #[xMVar]
     -- `h : P ?x → (∃ x, P x)` = `fun p => ⟨?x, p⟩`; feed to applyPFocusImp.
@@ -814,8 +841,14 @@ syntax (name := letTac) "let " ident (" : " term)? " := " term : pfocus
 
 /--
 Core of `have`/`let` in pfocus: elaborate the type (or infer from value),
-elaborate the value, allocate a fresh let-fvar, extend the current pfocus
-goal's declared local context with it, and record it in the state.
+elaborate the value, allocate a fresh let-fvar, and extend the declared
+local context of *every* tracked pfocus mvar with it.
+
+Extending only the main goal isn't enough: a subsequent tactic might
+assign a *different* tracked mvar (e.g. the witness mvar created by
+`exists`) using the new let-bound variable. If that mvar's declared
+context doesn't contain the let-decl, Lean will zeta-reduce the
+assignment back to the underlying value, losing the binding.
 -/
 def addPFocusLetDecl (name : Name) (typeStx? : Option Syntax) (valueStx : Syntax) :
     PFocusM Unit := do
@@ -829,10 +862,15 @@ def addPFocusLetDecl (name : Name) (typeStx? : Option Syntax) (valueStx : Syntax
     let type ← instantiateMVars expectedType
     let value ← instantiateMVars value
     let fvarId ← mkFreshFVarId
-    let decl ← mvarId.getDecl
-    let newLCtx := decl.lctx.mkLetDecl fvarId name type value
-    modifyMCtx fun mctx =>
-      mctx.modifyExprMVarDecl mvarId fun d => { d with lctx := newLCtx }
+    let state ← get
+    -- Extend every tracked mvar's declared local context with the new
+    -- let-decl, unless the mvar is already assigned.
+    for m in state.trackedMVars do
+      if (← m.isAssigned) then continue
+      let d ← m.getDecl
+      let newLCtx := d.lctx.mkLetDecl fvarId name type value
+      modifyMCtx fun mctx =>
+        mctx.modifyExprMVarDecl m fun md => { md with lctx := newLCtx }
     let newDecl : PFocusLetDecl :=
       { fvarId, userName := name, type, value }
     modify fun s => { s with extraDecls := s.extraDecls.push newDecl }
