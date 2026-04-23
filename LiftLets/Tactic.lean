@@ -61,13 +61,20 @@ fvars in the same order? -/
 private def lctxEqLiftLets (a b : LocalContext) : Bool :=
   a.isSubPrefixOf b && b.isSubPrefixOf a
 
-/-- Extend the declared local context of every tracked (unassigned) mvar
-with a new let-decl. -/
+/-- Extend the declared local context of every tracked mvar with a new
+let-decl.
+
+Even *assigned* mvars get their lctx updated: we use `rootMVar`'s
+current lctx as the canonical record of what's been added (so
+`exitLiftLets` can recover the let-decls without a parallel state
+field), and `rootMVar` gets assigned as soon as the first `tactic => …`
+runs. Updating an assigned mvar's lctx is safe because we only ever
+append decls — its existing assignment still type-checks in the larger
+context. -/
 private def extendTrackedLCtxs (fvarId : FVarId) (userName : Name)
     (type value : Expr) : LiftLetsM Unit := do
   let tracked := (← get).trackedMVars
   for m in tracked do
-    if (← m.isAssigned) then continue
     let d ← m.getDecl
     let newLCtx := d.lctx.mkLetDecl fvarId userName type value
     modifyMCtx fun mctx =>
@@ -92,25 +99,35 @@ def enterLiftLets : TacticM LiftLetsState := do
     replaceMainGoal [rootMVar.mvarId!]
     return {
       entryGoal, entryLCtx, rootMVar := rootMVar.mvarId!
-      extraDecls := #[]
       trackedMVars := #[rootMVar.mvarId!]
     }
 
 /-- Exit lift_lets mode.
 
-Collect every let-decl the block accumulated, build a local context
-containing them, wrap the current `rootMVar` value with `mkLetFVars`,
-and assign the original goal. Unassigned goals (from `tactic => …`
-calls that left subgoals) are left in the main goal list for the user
-to continue with *inside* the extended context.
+The authoritative record of the let-decls introduced during the block
+is the `LocalContext` attached to `rootMVar`: every `have`/`let` we saw
+has already extended that lctx. So at exit we just diff it against the
+entry lctx, wrap the `rootMVar` value with one `let`-binding per
+newcomer via `mkLetFVars`, and assign the original goal for the first
+time.
+
+Unassigned subgoals (from `tactic => …` calls that left open branches)
+stay in the main goal list for the user to continue with *inside* the
+extended context.
 -/
 def exitLiftLets : LiftLetsM Unit := do
   let state ← get
-  let extLCtx := state.extraDecls.foldl (init := state.entryLCtx) fun lctx d =>
-    lctx.mkLetDecl d.fvarId d.userName d.type d.value
-  withLCtx extLCtx #[] do
+  let rootDecl ← state.rootMVar.getDecl
+  let currentLCtx := rootDecl.lctx
+  -- Decls added since entry, in their local-context insertion order.
+  let extraFVars : Array Expr := Id.run do
+    let mut acc : Array Expr := #[]
+    for decl in currentLCtx do
+      unless state.entryLCtx.contains decl.fvarId do
+        acc := acc.push (.fvar decl.fvarId)
+    return acc
+  withLCtx currentLCtx #[] do
     let rootValue ← instantiateMVars (.mvar state.rootMVar)
-    let extraFVars := state.extraDecls.map fun d => Expr.fvar d.fvarId
     let wrapped ← mkLetFVars (usedLetOnly := false) extraFVars rootValue
     state.entryGoal.assign wrapped
 
@@ -252,8 +269,6 @@ def addLiftLetsDecl (name : Name) (typeStx? : Option Syntax) (valueStx : Syntax)
     let value ← instantiateMVars value
     let fvarId ← mkFreshFVarId
     extendTrackedLCtxs fvarId name type value
-    let newDecl : LiftLetsDecl := { fvarId, userName := name, type, value }
-    modify fun s => { s with extraDecls := s.extraDecls.push newDecl }
 
 @[lift_lets_tactic LiftLets.haveTac] def evalHaveTac : LiftLetsTactic := fun stx => do
   match stx with

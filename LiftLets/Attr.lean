@@ -16,34 +16,31 @@ namespace LiftLets
 
 open Lean Elab Tactic Meta
 
-/-- A let-declaration introduced by `have`/`let` inside lift_lets mode. -/
-structure LiftLetsDecl where
-  fvarId : FVarId
-  userName : Name
-  type : Expr
-  value : Expr
-
 /-- State threaded through a `lift_lets => ...` block.
 
-* `entryGoal` — the goal that was main when `lift_lets =>` was entered. Not
-  assigned until `exitLiftLets` runs.
-* `entryLCtx` — `entryGoal`'s local context at entry.
+* `entryGoal` — the goal that was main when `lift_lets =>` was entered.
+  Not assigned until `exitLiftLets` runs.
+* `entryLCtx` — `entryGoal`'s local context at entry. Used at exit to
+  find the let-decls that were added during the block, simply by
+  diffing `entryLCtx` against `rootMVar`'s current local context.
 * `rootMVar` — the proof-shaped mvar that, when ultimately instantiated,
   yields a proof of `entryGoal`'s target.
-* `extraDecls` — let-decls added in this block, in order, to be wrapped
-  around the proof at exit.
 * `trackedMVars` — every metavariable allocated inside the block (the
-  root, lift_lets leaves, witness mvars from `exists`, subgoal mvars…). When
-  `have`/`let` extends the context we extend *each* tracked mvar's
-  declared local context too, so later tactics that assign any of them
-  can do so in terms of the new let-bound variable without triggering
-  zeta-reduction.
+  root, lift_lets leaves, witness mvars from `refine ⟨?_, _⟩`, subgoal
+  mvars, …). On every `have`/`let` we extend *each* tracked mvar's
+  declared local context with the new let-decl, so later tactics that
+  assign any of them with a term referencing the let-bound name can do
+  so without triggering zeta-reduction.
+
+We deliberately do *not* carry a list of the let-decls themselves: the
+authoritative record is the `LocalContext` carried by `rootMVar` (and
+every other tracked mvar). `exitLiftLets` recovers the list to wrap
+around the proof by diffing that against `entryLCtx`.
 -/
 structure LiftLetsState where
   entryGoal : MVarId
   entryLCtx : LocalContext
   rootMVar : MVarId
-  extraDecls : Array LiftLetsDecl := #[]
   trackedMVars : Array MVarId := #[]
 
 /-- The monad in which lift_lets-mode tactics run. -/
