@@ -69,10 +69,17 @@ focused proposition. Fails with a clear error if the target is not a pfocus
 goal.
 -/
 def matchPFocusGoal (e : Expr) : MetaM (Expr × Expr) := do
-  let e ← instantiateMVars e
-  let_expr Pfocus.pfocus outer focus := e
-    | throwError "not a pfocus goal:{indentExpr e}\nare you inside a `pfocus => ...` block?"
+  -- Strip any enclosing `mdata` (for example the `noImplicitLambda`
+  -- annotation that `have`/`let` tactics place around the updated target)
+  -- and any outstanding mvar indirection.
+  let e := (← instantiateMVars e).consumeMData
+  unless e.isAppOfArity ``Pfocus.pfocus 3 do
+    throwError "not a pfocus goal:{indentExpr e}\nare you inside a `pfocus => ...` block?"
+  let outer := e.appFn!.appArg!
+  let focus := e.appArg!
   return (outer, focus)
+
+initialize registerTraceClass `Pfocus.matchGoal
 
 /-- `True : Prop` as an expression. -/
 def mkTrueExpr : Expr := .const ``True []
@@ -173,7 +180,7 @@ def replaceWithFocusGoal (newOuter newFocus : Expr) : TacticM Unit := do
     -- the result type to be `pfocus oldOuter oldFocus` (= old target).
     let elim ← mkAppM ``Pfocus.pfocus_elim #[newMVar]
     let intro ← mkAppOptM ``Pfocus.pfocus_intro
-      #[some oldOuter, some oldFocus, some elim]
+      #[none, some oldOuter, some oldFocus, some elim]
     mvarId.assign intro
     replaceMainGoal [newMVar.mvarId!]
 
@@ -269,7 +276,10 @@ call `exit` explicitly to leave pfocus mode mid-block, for example inside
 control combinators.
 -/
 partial def exitPFocus : TacticM Unit := do
-  -- Idempotent: do nothing if the main goal is not a pfocus goal.
+  -- Idempotent: do nothing if there is no remaining goal, or if the main
+  -- goal is not a pfocus goal. The first case occurs when a predicate-focus
+  -- `tactic =>` has already fully committed a witness and closed the `∃`.
+  if (← getGoals).isEmpty then return
   let mvarIdInit ← getMainGoal
   let targetInit ← instantiateMVars (← mvarIdInit.getType)
   unless targetInit.isAppOf ``Pfocus.pfocus do return
@@ -282,13 +292,13 @@ partial def exitPFocus : TacticM Unit := do
       -- a leftover `True` goal that the user would have to dispatch.
       if ← isDefEq focus trueExpr then
         let intro ← mkAppOptM ``Pfocus.pfocus_intro
-          #[some (mkPropLam (.bvar 0)), some trueExpr, some (.const ``True.intro [])]
+          #[none, some (mkPropLam (.bvar 0)), some trueExpr, some (.const ``True.intro [])]
         mvarId.assign intro
         replaceMainGoal []
       else
         let newMVar ← mkFreshExprSyntheticOpaqueMVar focus (← mvarId.getTag)
         let intro ← mkAppOptM ``Pfocus.pfocus_intro
-          #[some (mkPropLam (.bvar 0)), some focus, some newMVar]
+          #[none, some (mkPropLam (.bvar 0)), some focus, some newMVar]
         mvarId.assign intro
         replaceMainGoal [newMVar.mvarId!]
   else
@@ -350,6 +360,48 @@ private def betaNormOuter (outer : Expr) : Expr :=
     replaceWithFocusGoal newOuter B
 
 @[tactic out] def evalOut : Tactic := fun _ => outStep
+
+/-! ### `intro`: step into an existential
+
+Turn `pfocus C (∃ x : α, P x)` into `pfocus (fun p : α → Prop => C (∃ x, p x))
+(fun x => P x)`, shifting the focus from the whole existential to the body
+predicate.
+
+Once inside, `tactic => ...` handles the predicate focus specially (see
+`runActionOnFocus`): it creates a fresh mvar `?x` for the bound variable and
+lets the user either commit a witness or transform the predicate without
+committing.
+-/
+
+/-- Step into an existential: focus on the body predicate. -/
+syntax (name := introTac) "intro" : pfocus
+
+@[tactic introTac] def evalIntroTac : Tactic := fun _ => do
+  let _tup ← getPFocusTarget
+  let (mvarId, outer, focus) := _tup
+  mvarId.withContext do
+    -- Expect `focus = @Exists α P`.
+    let focus := focus.consumeMData
+    unless focus.isAppOfArity ``Exists 2 do
+      throwError "`intro`: focus is not an existential:{indentExpr focus}"
+    let α := focus.appFn!.appArg!
+    let P := focus.appArg!
+    -- Build `fun p : α → Prop => outer (∃ x : α, p x)`, β-normalized.
+    let predType ← mkArrow α mkPropExpr
+    let outer' := outer.liftLooseBVars 0 1
+    let α' := α.liftLooseBVars 0 1
+    let u ← getLevel α
+    let bodyExists := mkApp2 (.const ``Exists [u]) α' (.bvar 0)
+    let newOuterBody := mkApp outer' bodyExists
+    let newOuter := betaNormOuter (Expr.lam `p predType newOuterBody .default)
+    let newType ← mkAppM ``Pfocus.pfocus #[newOuter, P]
+    let newMVar ← mkFreshExprSyntheticOpaqueMVar newType (← mvarId.getTag)
+    -- Close old goal: `pfocus_intro (pfocus_elim newMVar)`.
+    let elim ← mkAppM ``Pfocus.pfocus_elim #[newMVar]
+    let intro ← mkAppOptM ``Pfocus.pfocus_intro
+      #[none, some outer, some focus, some elim]
+    mvarId.assign intro
+    replaceMainGoal [newMVar.mvarId!]
 
 /-- Do nothing. Useful for empty pfocus sequences. -/
 syntax (name := skip) "skip" : pfocus
@@ -422,7 +474,7 @@ private def mkAndTrueIntro (other : Expr) : MetaM Expr :=
     let _tup11 ← matchPFocusGoal (← mvarId.getType)
     let (oldOuter, oldFocus) := _tup11
     let intro ← mkAppOptM ``Pfocus.pfocus_intro
-      #[some oldOuter, some oldFocus, some monoCall]
+      #[none, some oldOuter, some oldFocus, some monoCall]
     mvarId.assign intro
     replaceMainGoal [newMVar.mvarId!]
 
@@ -505,8 +557,12 @@ def applyPFocusImp (h : Expr) (X : Expr) : TacticM Unit := do
     -- robust to the shape of `outer` — instance synthesis would require
     -- higher-order unification that Lean doesn't always solve.
     let mono ← buildMonoSpec outer X focus
+    -- `mono : (X → focus) → outer X → outer focus`. Compose with `h` to get
+    -- the direct morphism `outer X → outer focus` that `pfocus_imp_raw`
+    -- expects.
+    let hMorphism := mkApp mono h
     let proof ← mkAppOptM ``Pfocus.pfocus_imp_raw
-      #[some outer, some X, some focus, some mono, some h, some newMVar]
+      #[none, some outer, some X, some focus, some hMorphism, some newMVar]
     mvarId.assign proof
     replaceMainGoal [newMVar.mvarId!]
 
@@ -568,9 +624,87 @@ private def projConj (ps : List Expr) (h : Expr) : MetaM (List Expr) := do
       return left :: rest
 
 /--
+When the focus is itself a function `α → Prop` (i.e. a predicate) and the
+outer context is the canonical `fun p => ∃ x, p x` wrapper, running a
+`tactic => ...` needs special treatment: we create a fresh metavariable
+`?x : α` as a stand-in for the yet-to-be-chosen witness, run the user's
+tactic against the goal `focus ?x`, and finish up based on whether `?x` was
+assigned.
+
+If the tactic assigns `?x` to some witness `e`, we add `let x := e` to the
+local context and close the original `∃` using `Exists.intro x`. If it does
+not (and the tactic leaves no subgoals), we currently error — a predicate
+rewrite without committing can be expressed through `conv => ...`.
+-/
+private def runExistsAction (mvarId : MVarId) (outer focus α : Expr)
+    (action : MVarId → TacticM (List MVarId)) : TacticM Unit := do
+  -- Verify outer shape: `fun p : α → Prop => ∃ x : α, p x`, i.e.
+  -- `fun p => Exists α p`.
+  let outerW ← whnf outer
+  let .lam _ _ outerBody _ := outerW
+    | throwError "\
+        `tactic =>` with a predicate focus requires the outer to be \
+        `fun p : α → Prop => ∃ x, p x`, but the outer is:{indentExpr outer}"
+  let outerBody := outerBody.consumeMData
+  unless outerBody.isAppOfArity ``Exists 2
+      && outerBody.appArg! == .bvar 0 do
+    throwError "\
+      `tactic =>` with a predicate focus requires the outer to be \
+      `fun p => ∃ x, p x`, but the outer body is:{indentExpr outerBody}"
+  -- Create the witness mvar and the applied focus goal.
+  let xMVar ← mkFreshExprMVar α (userName := `x)
+  let appGoal := focus.beta #[xMVar]
+  let focusMVar ← mkFreshExprSyntheticOpaqueMVar appGoal (← mvarId.getTag)
+  -- Run the user action on the fresh goal.
+  let savedGoals ← getGoals
+  let subgoals ←
+    try action focusMVar.mvarId!
+    finally setGoals savedGoals
+  -- Subgoal local contexts must match the base context.
+  let baseLCtx := (← mvarId.getDecl).lctx
+  for g in subgoals do
+    let gLCtx := (← g.getDecl).lctx
+    unless gLCtx.isSubPrefixOf baseLCtx && baseLCtx.isSubPrefixOf gLCtx do
+      throwError "\
+        a pfocus action produced a subgoal whose local context differs \
+        from the enclosing pfocus goal. Close such goals inside the \
+        `tactic => ...` block.\n\nOffending goal:{
+          indentD (MessageData.ofGoal g)}"
+  -- Decide based on whether the witness mvar was assigned.
+  let xInst ← instantiateMVars xMVar
+  if xInst.isMVar then
+    -- Unassigned case: the tactic ran without committing a witness. For
+    -- now, we don't support this; the user can run the inner tactic via
+    -- `conv => ...` if they only need a predicate rewrite.
+    throwError "\
+      `tactic =>` with an existential focus: the tactic did not commit \
+      a witness for the bound variable. Use `conv => ...` to transform \
+      the predicate without committing, or arrange for the tactic to \
+      pick a witness (e.g. via `exact`)."
+  let e := xInst
+  unless subgoals.isEmpty do
+    throwError "\
+      `tactic =>` with an existential focus: the tactic committed a \
+      witness but left {subgoals.length} open subgoal(s). Close them \
+      inside the `tactic =>` block."
+  -- Build the closing term, adding `let x := e` to the local context.
+  let proofTerm ← Meta.withLetDecl `x α e fun x => do
+    let focusProof ← instantiateMVars focusMVar
+    let existsProof ← mkAppOptM ``Exists.intro
+      #[none, some focus, some x, some focusProof]
+    let oldIntro ← mkAppOptM ``Pfocus.pfocus_intro
+      #[none, some outer, some focus, some existsProof]
+    mkLetFVars #[x] oldIntro
+  mvarId.assign proofTerm
+  replaceMainGoal []
+
+/--
 Core action: run `action` (a plain `TacticM` computation) on a fresh goal
 whose type is the current focus, then fold the resulting open subgoals into
 the new focus via `pfocus_imp`.
+
+When the focus is a predicate (has a `∀`-type), we dispatch to
+`runExistsAction` above instead.
 
 Contracts:
 * `action` must not change the list of goals outside the single starting one.
@@ -580,8 +714,14 @@ Contracts:
 -/
 def runActionOnFocus (action : MVarId → TacticM (List MVarId)) : TacticM Unit := do
   let _tup16 ← getPFocusTarget
-  let (mvarId, _, focus) := _tup16
+  let (mvarId, outer, focus) := _tup16
   mvarId.withContext do
+    -- Predicate-focus case: the focus itself is a function `α → …`. The
+    -- outer must be an existential wrapper and the tactic gets a fresh
+    -- witness mvar.
+    let focusType ← instantiateMVars (← inferType focus)
+    if let .forallE _ α _ _ := focusType then
+      return ← runExistsAction mvarId outer focus α action
     -- Fresh goal with the current focus as its target.
     let focusMVar ← mkFreshExprSyntheticOpaqueMVar focus (← mvarId.getTag)
     -- Save and restore the global goal list around the action, since the
@@ -785,7 +925,7 @@ syntax (name := showTac) "show " term : pfocus
       let (oldOuter, oldFocus) := _tup20
       let elim ← mkAppM ``Pfocus.pfocus_elim #[newMVar]
       let intro ← mkAppOptM ``Pfocus.pfocus_intro
-        #[some oldOuter, some oldFocus, some elim]
+        #[none, some oldOuter, some oldFocus, some elim]
       mvarId.assign intro
       replaceMainGoal [newMVar.mvarId!]
   | _ => throwUnsupportedSyntax

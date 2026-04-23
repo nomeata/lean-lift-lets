@@ -34,6 +34,7 @@ be reassembled around `P` — is hidden.
 | `out`   | undo one focus step                                             |
 | `done`  | after the focus has been reduced to `True`, pop the frame      |
 | `next`  | navigate to the next unfinished leaf in the conjunction tree   |
+| `intro` | step into an `∃ x, P x`, focusing on the body predicate `P`    |
 | `exit`  | leave `pfocus` mode early                                       |
 | `skip`  | do nothing                                                      |
 
@@ -141,12 +142,35 @@ example (A B C : Prop) (a : A) (b : B) (c : C) : (A ∧ B) ∧ C := by
   exact c
 ```
 
+## Existentials
+
+`pfocus` can also focus inside an `∃`. The `intro` navigation tactic turns
+`pfocus C (∃ x, P x)` into `pfocus (fun p => C (∃ x, p x)) (fun x => P x)`,
+putting the focus on the predicate. When the focus is a predicate, `tactic
+=> ...` behaves specially: it creates a fresh mvar `?x` for the bound
+variable and passes `P ?x` to the user's tactic.
+
+If the tactic assigns `?x` to some witness `e`, a `let x := e` is added to
+the local context and the `∃` is discharged via `Exists.intro x`. If the
+tactic doesn't commit a witness, you get a clear error pointing you at
+`conv => ...` for predicate rewrites.
+
+```lean
+example (n : Nat) (h : n + 0 = n) : ∃ x : Nat, x + 0 = x := by
+  pfocus =>
+    have h' : n + 0 = n := h   -- shared context, independent of witness
+    intro
+    tactic =>
+      exact h'                 -- assigns ?x := n and closes
+```
+
 ## Limitations
 
-The MVP covers only `And`. The design generalizes to any monotone outer
-context — adding `Or` (on one side), `→`, or universe-quantified connectives
-only needs new `PFocusable` instances and matching step construction code in
-`Tactic.lean`. Those are natural next steps.
+The MVP covers `And` and `Exists`. Other monotone connectives (`Or` on one
+side, `→`, universe-quantified forms) are natural extensions: each needs a
+new matcher in `Tactic.lean` plus, for the `And`-style ones, an entry in
+`PFocusable`. Nested existentials and non-trivial outer wrapping around an
+`∃` aren't yet supported by the `tactic =>` specialization.
 
 ## Contributing
 
