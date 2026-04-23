@@ -15,7 +15,7 @@ predicate.
 -- with the concrete RHS).
 example : ∃ x : Nat, x = 5 := by
   pfocus =>
-    intro
+    exists
     tactic =>
       exact rfl
 
@@ -23,7 +23,7 @@ example : ∃ x : Nat, x = 5 := by
 example (n : Nat) (h : n + 0 = n) : ∃ x : Nat, x + 0 = x := by
   pfocus =>
     have h' : n + 0 = n := h
-    intro
+    exists
     tactic =>
       exact h'
 
@@ -32,7 +32,7 @@ example (n : Nat) (h : n + 0 = n) : ∃ x : Nat, x + 0 = x := by
 -- with a regular tactic.
 example (h : ∀ y : Nat, y + 0 = y) : ∃ x : Nat, x + 0 = x := by
   pfocus =>
-    intro
+    exists
     tactic =>
       -- `apply h` closes against a generic `?x`, leaves `?x` unassigned.
       apply h
@@ -44,7 +44,7 @@ example (h : ∀ y : Nat, y + 0 = y) : ∃ x : Nat, x + 0 = x := by
 -- `fun _ => True`; the ∃ is still trivially closable outside the block.
 example (g : Nat → Prop) (hg : ∀ n, g n) : ∃ x : Nat, g x := by
   pfocus =>
-    intro
+    exists
     tactic =>
       apply hg
   exact ⟨0, trivial⟩

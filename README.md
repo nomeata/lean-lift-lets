@@ -34,7 +34,7 @@ be reassembled around `P` — is hidden.
 | `out`   | undo one focus step                                             |
 | `done`  | after the focus has been reduced to `True`, pop the frame      |
 | `next`  | navigate to the next unfinished leaf in the conjunction tree   |
-| `intro` | step into an `∃ x, P x`, focusing on the body predicate `P`    |
+| `exists`| step into an `∃ x, P x`, focusing on the body predicate `P`    |
 | `exit`  | leave `pfocus` mode early                                       |
 | `skip`  | do nothing                                                      |
 
@@ -144,11 +144,13 @@ example (A B C : Prop) (a : A) (b : B) (c : C) : (A ∧ B) ∧ C := by
 
 ## Existentials
 
-`pfocus` can also focus inside an `∃`. The `intro` navigation tactic turns
+`pfocus` can also focus inside an `∃`. The `exists` navigation tactic turns
 `pfocus C (∃ x, P x)` into `pfocus (fun p => C (∃ x, p x)) (fun x => P x)`,
-putting the focus on the predicate. When the focus is a predicate, `tactic
-=> ...` behaves specially: it creates a fresh mvar `?x` for the bound
-variable and passes `P ?x` to the user's tactic.
+putting the focus on the predicate. The goal renders as `⇣ ?x + 0 = ?x`
+(say) — the bound variable is shown as a `?x` placeholder so the applied
+body is visible in the infoview instead of a raw lambda. When the focus is
+a predicate, `tactic => ...` behaves specially: it creates a fresh mvar
+`?x` for the bound variable and passes `P ?x` to the user's tactic.
 
 If the tactic assigns `?x` to some witness `e`, a `let x := e` is added to
 the local context and the `∃` is discharged via `Exists.intro x`. If the
@@ -159,7 +161,7 @@ tactic doesn't commit a witness, you get a clear error pointing you at
 example (n : Nat) (h : n + 0 = n) : ∃ x : Nat, x + 0 = x := by
   pfocus =>
     have h' : n + 0 = n := h   -- shared context, independent of witness
-    intro
+    exists
     tactic =>
       exact h'                 -- assigns ?x := n and closes
 ```

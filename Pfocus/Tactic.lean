@@ -361,7 +361,7 @@ private def betaNormOuter (outer : Expr) : Expr :=
 
 @[tactic out] def evalOut : Tactic := fun _ => outStep
 
-/-! ### `intro`: step into an existential
+/-! ### `exists`: step into an existential
 
 Turn `pfocus C (∃ x : α, P x)` into `pfocus (fun p : α → Prop => C (∃ x, p x))
 (fun x => P x)`, shifting the focus from the whole existential to the body
@@ -374,16 +374,16 @@ committing.
 -/
 
 /-- Step into an existential: focus on the body predicate. -/
-syntax (name := introTac) "intro" : pfocus
+syntax (name := existsTac) "exists" : pfocus
 
-@[tactic introTac] def evalIntroTac : Tactic := fun _ => do
+@[tactic existsTac] def evalExistsTac : Tactic := fun _ => do
   let _tup ← getPFocusTarget
   let (mvarId, outer, focus) := _tup
   mvarId.withContext do
     -- Expect `focus = @Exists α P`.
     let focus := focus.consumeMData
     unless focus.isAppOfArity ``Exists 2 do
-      throwError "`intro`: focus is not an existential:{indentExpr focus}"
+      throwError "`exists`: focus is not an existential:{indentExpr focus}"
     let α := focus.appFn!.appArg!
     let P := focus.appArg!
     -- Build `fun p : α → Prop => outer (∃ x : α, p x)`, β-normalized.
@@ -407,6 +407,13 @@ syntax (name := introTac) "intro" : pfocus
 syntax (name := skip) "skip" : pfocus
 
 @[tactic skip] def evalSkip : Tactic := fun _ => pure ()
+
+/-- Print the current pfocus goal state. -/
+syntax (name := traceState) "trace_state" : pfocus
+
+@[tactic traceState] def evalTraceState : Tactic := fun _ => do
+  let g ← getMainGoal
+  logInfo m!"{g}"
 
 /-! ### `done`
 
