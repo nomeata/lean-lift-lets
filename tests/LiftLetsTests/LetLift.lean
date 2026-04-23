@@ -1,7 +1,7 @@
-import Pfocus
+import LiftLets
 
 /-!
-Main feature of pfocus mode: `have`/`let` introduced *mid-proof* remain
+Main feature of lift_lets mode: `have`/`let` introduced *mid-proof* remain
 visible and usable across the remaining subgoals, and the let-bindings
 show up in the final proof term — they are not zeta-reduced into every
 use site.
@@ -14,7 +14,7 @@ witness assignment into the body's underlying value.
 
 example (g : Nat → Prop) (n : Nat) (h : (n + 1) + 0 = (n + 1)) (hg : g (n + 1)) :
     ∃ x : Nat, x + 0 = x ∧ g x := by
-  pfocus =>
+  lift_lets =>
     tactic => refine ⟨?_, ?_, ?_⟩
     -- three subgoals: `?x : Nat`, `?x + 0 = ?x`, and `g ?x`.
     let m := n + 1
@@ -23,20 +23,20 @@ example (g : Nat → Prop) (n : Nat) (h : (n + 1) + 0 = (n + 1)) (hg : g (n + 1)
     · exact h'
     · exact hg
 
--- `let` at the pfocus level survives `apply` producing new subgoals.
+-- `let` at the lift_lets level survives `apply` producing new subgoals.
 example (f : Nat → Nat → Prop) (g : ∀ a b, f a b) : f 0 0 ∧ f 1 1 := by
-  pfocus =>
+  lift_lets =>
     let zero := (0 : Nat)
     constructor
     · exact g zero zero
     · exact g 1 1
 
 -- `have` introduced in one branch is NOT visible in sibling branches,
--- because it isn't a pfocus-level `have` (it's inside `tactic =>`).
--- The pfocus-level `have` above `constructor` is; the inner
+-- because it isn't a lift_lets-level `have` (it's inside `tactic =>`).
+-- The lift_lets-level `have` above `constructor` is; the inner
 -- `tactic => have` here is strictly local.
 example (A B : Prop) (a : A) (b : B) : A ∧ B := by
-  pfocus =>
+  lift_lets =>
     constructor
     · tactic =>
         have _ := a

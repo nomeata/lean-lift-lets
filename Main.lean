@@ -1,4 +1,4 @@
-import Pfocus
+import LiftLets
 
 def main : IO Unit :=
-  IO.println "Pfocus: tactics that maintain a focus in a proof goal."
+  IO.println "LiftLets: tactics that maintain a focus in a proof goal."

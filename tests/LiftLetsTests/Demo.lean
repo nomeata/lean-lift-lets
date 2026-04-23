@@ -1,9 +1,9 @@
-import Pfocus
+import LiftLets
 
 /-!
-# Pfocus: a focused walkthrough
+# lift-lets: a focused walkthrough
 
-Open this file with the infoview on to get a feel for pfocus mode.
+Open this file with the infoview on to get a feel for lift_lets mode.
 Every section is a small example that illustrates one feature; the
 sections build on each other.
 -/
@@ -11,34 +11,34 @@ sections build on each other.
 namespace Demo
 
 /-!
-## 1. What `pfocus => …` does
+## 1. What `lift_lets => …` does
 
-Inside a `pfocus => …` block the library keeps a list of tracked
+Inside a `lift_lets => …` block the library keeps a list of tracked
 metavariables — subgoals the user has yet to close — and defers the
 *assignment* of the original goal until the end of the block. That
-means pfocus-level `have`/`let` can extend the local context in a way
+means lift_lets-level `have`/`let` can extend the local context in a way
 that reaches every tracked subgoal, with no zeta-reduction on
 assignments.
 
 Anything the user runs with `tactic => tac` is a plain Lean tactic, so
-inside pfocus mode you still have the familiar tactic language; the
+inside lift_lets mode you still have the familiar tactic language; the
 new piece is the shared context.
 -/
 
 -- Closing a simple goal with `exact` (a shortcut for `tactic => exact`).
 example (A : Prop) (a : A) : A := by
-  pfocus =>
+  lift_lets =>
     exact a
 
 /-!
 ## 2. Splitting a goal with `constructor`
 
-`constructor` is a pfocus wrapper around `tactic => constructor`. The
+`constructor` is a lift_lets wrapper around `tactic => constructor`. The
 new subgoals become tracked mvars; we then close each one.
 -/
 
 example (A B : Prop) (a : A) (b : B) : A ∧ B := by
-  pfocus =>
+  lift_lets =>
     constructor
     · exact a
     · exact b
@@ -46,13 +46,13 @@ example (A B : Prop) (a : A) (b : B) : A ∧ B := by
 /-!
 ## 3. Shared `have`/`let`
 
-The key pfocus feature: `have`/`let` at the pfocus level are visible
+The key lift_lets feature: `have`/`let` at the lift_lets level are visible
 across every tracked subgoal. The binding is wrapped once around the
 final proof term as an outer `let` — not duplicated into every leaf.
 -/
 
 example (A B : Prop) (h : A → B) (a : A) : A ∧ B := by
-  pfocus =>
+  lift_lets =>
     have hb : B := h a
     constructor
     · exact a
@@ -63,13 +63,13 @@ example (A B : Prop) (h : A → B) (a : A) : A ∧ B := by
 
 When `refine ⟨?_, ?_⟩` creates a witness subgoal plus a body subgoal,
 a later `have` is propagated to the witness mvar too. So `exact m`
-where `m` is a pfocus-level `let` unifies the witness against `m`,
+where `m` is a lift_lets-level `let` unifies the witness against `m`,
 not the underlying value — no zeta.
 -/
 
 example (g : Nat → Prop) (n : Nat) (h : (n + 1) + 0 = (n + 1)) (hg : g (n + 1)) :
     ∃ x : Nat, x + 0 = x ∧ g x := by
-  pfocus =>
+  lift_lets =>
     tactic => refine ⟨?_, ?_, ?_⟩
     let m := n + 1
     have h' : m + 0 = m := h
@@ -81,17 +81,17 @@ example (g : Nat → Prop) (n : Nat) (h : (n + 1) + 0 = (n + 1)) (hg : g (n + 1)
 ## 5. `apply` and regular tactics
 
 `apply`, `exact`, `rfl`, `trivial`, `assumption`, `grind`, `rw`, `simp`
-are pfocus-level shortcuts around `tactic => …`. If you need a tactic
+are lift_lets-level shortcuts around `tactic => …`. If you need a tactic
 without a shortcut, just use the escape hatch.
 -/
 
 example (A B : Prop) (f : A → B) (a : A) : B := by
-  pfocus =>
+  lift_lets =>
     apply f
     exact a
 
 example (n : Nat) : n + 0 = n := by
-  pfocus =>
+  lift_lets =>
     tactic => simp
 
 /-!
@@ -102,7 +102,7 @@ close the goal. `next => tacs` focuses without the must-close check.
 -/
 
 example (P Q R : Prop) (p : P) (q : Q) (r : R) : P ∧ Q ∧ R := by
-  pfocus =>
+  lift_lets =>
     constructor
     · exact p
     constructor
@@ -115,14 +115,14 @@ example (P Q R : Prop) (p : P) (q : Q) (r : R) : P ∧ Q ∧ R := by
 A proof that threads two `let`s through a tree of subgoals. Each `let`
 is introduced *after* `constructor` has split the existential into a
 witness subgoal plus the body; the witness is then supplied by `exact
-as` (resp. `exact bs`), which unifies directly against the pfocus-level
+as` (resp. `exact bs`), which unifies directly against the lift_lets-level
 let-fvar — no zeta-reduction — so the remaining subgoals still see the
 same `as` / `bs` identifiers.
 -/
 
 example (xs : List Nat) (h : xs.length = 10) :
     ∃ as bs, as.length = 5 ∧ xs = as ++ bs ∧ as.length = bs.length := by
-  pfocus =>
+  lift_lets =>
     constructor
     constructor
     constructor
