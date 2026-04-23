@@ -302,8 +302,22 @@ partial def exitPFocus : TacticM Unit := do
         mvarId.assign intro
         replaceMainGoal [newMVar.mvarId!]
   else
-    outStep
-    exitPFocus
+    -- Try to pop an `And` frame. If that isn't possible (e.g. the outer is
+    -- a `∃` wrapper left over from an unassigned predicate-focus action),
+    -- unwrap the pfocus gadget to its underlying proposition instead so
+    -- the user can continue in regular tactic mode.
+    try
+      outStep
+      exitPFocus
+    catch _ =>
+      mvarId.withContext do
+        let (_, outer', focus') ← getPFocusTarget
+        let underlying := outer'.beta #[focus']
+        let newMVar ← mkFreshExprSyntheticOpaqueMVar underlying (← mvarId.getTag)
+        let intro ← mkAppOptM ``Pfocus.pfocus_intro
+          #[none, some outer', some focus', some newMVar]
+        mvarId.assign intro
+        replaceMainGoal [newMVar.mvarId!]
 
 /-! ## Navigation tactics
 
@@ -672,31 +686,105 @@ private def runExistsAction (mvarId : MVarId) (outer focus α : Expr)
           indentD (MessageData.ofGoal g)}"
   -- Decide based on whether the witness mvar was assigned.
   let xInst ← instantiateMVars xMVar
-  if xInst.isMVar then
-    -- Unassigned case: the tactic ran without committing a witness. For
-    -- now, we don't support this; the user can run the inner tactic via
-    -- `conv => ...` if they only need a predicate rewrite.
+  if !xInst.isMVar then
+    /- ### Assigned case
+
+    The tactic assigned `?x` to some witness `e`. For a clean proof term
+    (no dangling metavariables), `e` must itself be ground. We enforce this
+    here; the alternative would be to lift the remaining mvars out as new
+    existentials, which we leave for a later iteration.
+    -/
+    let e := xInst
+    if e.hasExprMVar then
+      throwError "\
+        `tactic =>` with an existential focus: the assigned witness still \
+        contains unassigned metavariables:{indentExpr e}"
+    unless subgoals.isEmpty do
+      throwError "\
+        `tactic =>` with an existential focus: the tactic committed a \
+        witness but left {subgoals.length} open subgoal(s). Close them \
+        inside the `tactic =>` block."
+    -- Build the closing term, adding `let x := e` to the local context.
+    let proofTerm ← Meta.withLetDecl `x α e fun x => do
+      let focusProof ← instantiateMVars focusMVar
+      let existsProof ← mkAppOptM ``Exists.intro
+        #[none, some focus, some x, some focusProof]
+      let oldIntro ← mkAppOptM ``Pfocus.pfocus_intro
+        #[none, some outer, some focus, some existsProof]
+      mkLetFVars #[x] oldIntro
+    mvarId.assign proofTerm
+    replaceMainGoal []
+    return
+  /- ### Unassigned case
+
+  The tactic transformed the predicate but didn't commit a witness. We
+  keep the `∃` in the outer and build a new predicate focus by abstracting
+  the witness mvar `?x` over the subgoals' types.
+
+  Concretely: each subgoal `g_i : T_i(?x)` becomes part of a new predicate
+  `λ x => T_1(x) ∧ ... ∧ T_n(x)`. The focus proof (which references `?x`
+  and the `g_i`) becomes a transport `∀ x, (∧ T_i(x)) → old_focus x`, and
+  that's lifted through the `∃` to give the morphism for `pfocus_imp_raw`.
+  -/
+  let focusId := focusMVar.mvarId!
+  unless (← focusId.isAssigned) do
+    -- Tactic did nothing observable: the goal list still contains the
+    -- original focus mvar. No update to the pfocus state.
+    return
+  let focusProof ← instantiateMVars (.mvar focusId)
+  -- Require the tactic's result to be "ground modulo ?x and the declared
+  -- subgoals". Lifting arbitrary new mvars as existentials is out of scope.
+  let allowed : Std.HashSet MVarId :=
+    (subgoals.foldl (·.insert ·) (∅ : Std.HashSet MVarId)).insert xMVar.mvarId!
+  let freshMVars :=
+    (focusProof.collectMVars {}).result.filter (!allowed.contains ·)
+  unless freshMVars.isEmpty do
     throwError "\
-      `tactic =>` with an existential focus: the tactic did not commit \
-      a witness for the bound variable. Use `conv => ...` to transform \
-      the predicate without committing, or arrange for the tactic to \
-      pick a witness (e.g. via `exact`)."
-  let e := xInst
-  unless subgoals.isEmpty do
-    throwError "\
-      `tactic =>` with an existential focus: the tactic committed a \
-      witness but left {subgoals.length} open subgoal(s). Close them \
-      inside the `tactic =>` block."
-  -- Build the closing term, adding `let x := e` to the local context.
-  let proofTerm ← Meta.withLetDecl `x α e fun x => do
-    let focusProof ← instantiateMVars focusMVar
-    let existsProof ← mkAppOptM ``Exists.intro
-      #[none, some focus, some x, some focusProof]
-    let oldIntro ← mkAppOptM ``Pfocus.pfocus_intro
-      #[none, some outer, some focus, some existsProof]
-    mkLetFVars #[x] oldIntro
-  mvarId.assign proofTerm
-  replaceMainGoal []
+      `tactic =>` with an existential focus: the tactic left \
+      {freshMVars.size} new unassigned metavariable(s) beyond the witness \
+      `?x` and its declared subgoals. Please close them inside the \
+      `tactic =>` block."
+  let subTypes ← subgoals.mapM fun g => g.getType
+  let (newPred, mpForall) ← withLocalDeclD `x α fun x => do
+    let replaceX (e : Expr) : Expr :=
+      e.replace fun sub =>
+        if sub.isMVar && sub.mvarId! == xMVar.mvarId! then some x else none
+    let subTypesX := subTypes.map replaceX
+    let conjX := mkConjunction subTypesX
+    let newPredLam ← mkLambdaFVars #[x] conjX
+    let focusProofX := replaceX focusProof
+    let mp ← withLocalDeclD `h conjX fun h => do
+      let parts ← projConj subTypesX h
+      let subst := subgoals.zip parts
+      let body := focusProofX.replace fun sub =>
+        match sub with
+        | .mvar m =>
+          match subst.find? (fun (g, _) => g == m) with
+          | some (_, p) => some p
+          | none => none
+        | _ => none
+      mkLambdaFVars #[h] body
+    let mpForall ← mkLambdaFVars #[x] mp
+    return (newPredLam, mpForall)
+  -- `hMorphism : (∃ x, newPred x) → (∃ x, focus x)`, i.e. `outer newPred → outer focus`.
+  let newExists ← mkAppM ``Exists #[newPred]
+  let hMorphism ← withLocalDeclD `e newExists fun e => do
+    let matcher ← withLocalDeclD `a α fun a => do
+      let haType := newPred.beta #[a]
+      withLocalDeclD `ha haType fun ha => do
+        let mpApplied := mkApp2 mpForall a ha
+        let intro ← mkAppOptM ``Exists.intro
+          #[none, some focus, some a, some mpApplied]
+        mkLambdaFVars #[a, ha] intro
+    let body ← mkAppM ``Exists.elim #[e, matcher]
+    mkLambdaFVars #[e] body
+  -- New pfocus goal: `pfocus outer newPred`.
+  let newType ← mkAppM ``Pfocus.pfocus #[outer, newPred]
+  let newMVar ← mkFreshExprSyntheticOpaqueMVar newType (← mvarId.getTag)
+  let proof ← mkAppOptM ``Pfocus.pfocus_imp_raw
+    #[none, some outer, some newPred, some focus, some hMorphism, some newMVar]
+  mvarId.assign proof
+  replaceMainGoal [newMVar.mvarId!]
 
 /--
 Core action: run `action` (a plain `TacticM` computation) on a fresh goal

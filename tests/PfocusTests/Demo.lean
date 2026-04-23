@@ -101,4 +101,55 @@ example (A B : Prop) (f : A → B) (a : A) : B ∧ True := by
     apply f
     assumption
 
+/-!
+## 5. Existentials
+
+`pfocus` also understands `∃`. The `intro` navigation tactic steps into an
+existential, turning `⊢ ⇣ ∃ x, P x` into a predicate focus `⊢ ⇣ fun x => P
+x`. Inside that predicate focus, `tactic => ...` behaves differently from
+the proposition case: it creates a *fresh metavariable* `?x : α` to stand
+in for the witness, then runs the user's tactic against the goal `P ?x`.
+
+Two outcomes matter:
+
+* If the tactic *assigns* `?x` to some term `e` (typically via `exact`
+  that unifies `?x` with the concrete value), a `let x := e` is added to
+  the local context and the `∃` is discharged via `Exists.intro x`.
+* If the tactic *doesn't* assign `?x`, the `∃` stays in the goal; the
+  predicate may have been transformed along the way.
+
+This lets context-building steps (`have`, `let`) happen *outside* the
+witness choice, which you can't do if you blindly `constructor` up-front.
+-/
+
+-- Witness-commit: `rfl` unifies `?x` with `5`, and we're done.
+example : ∃ x : Nat, x = 5 := by
+  pfocus =>
+    intro
+    -- focus: `fun x => x = 5`, with a fresh `?x : Nat` in scope for the
+    -- `tactic =>` block.
+    tactic =>
+      exact rfl
+
+-- Shared context across a witness commit. `h'` is introduced in pfocus
+-- mode, before entering the existential; once inside, the fresh `?x` can
+-- be unified against whatever `h'` requires.
+example (n : Nat) (h : n + 0 = n) : ∃ x : Nat, x + 0 = x := by
+  pfocus =>
+    have h' : n + 0 = n := h
+    intro
+    tactic =>
+      exact h'
+
+-- No-witness-commit: the tactic does useful predicate work without
+-- picking a specific `x`. The `∃` stays in the goal for us to close
+-- afterwards.
+example (g : Nat → Prop) (hg : ∀ n, g n) : ∃ x : Nat, g x := by
+  pfocus =>
+    intro
+    tactic =>
+      apply hg  -- closes against a generic `?x`; `?x` stays free.
+  -- After exit, the goal is `∃ x, True` (the predicate collapsed).
+  exact ⟨0, trivial⟩
+
 end Demo
